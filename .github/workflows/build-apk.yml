@@ -19,35 +19,73 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          test -f THT-Android-Project.zip
-          echo "Project archive found."
+
+          ARCHIVE="$(find . -maxdepth 2 -type f \( -iname '*.zip' \) | head -n 1)"
+
+          if [ -z "${ARCHIVE:-}" ]; then
+            echo "ERROR: Android project ZIP was not found."
+            find . -maxdepth 3 -type f -print
+            exit 1
+          fi
+
+          echo "Using archive: $ARCHIVE"
+          echo "ARCHIVE=$ARCHIVE" >> "$GITHUB_ENV"
 
       - name: Extract Android project
         shell: bash
         run: |
           set -euo pipefail
+
           rm -rf android-project
           mkdir android-project
-          unzip -q THT-Android-Project.zip -d android-project
-          echo "Project extracted."
+          unzip -q "$ARCHIVE" -d android-project
+
+          echo "Archive extracted."
 
       - name: Locate Gradle project
         shell: bash
         run: |
           set -euo pipefail
 
-          SETTINGS_FILE="$(find android-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -n 1)"
+          SETTINGS="$(find android-project -type f \( \
+            -name 'settings.gradle' -o \
+            -name 'settings.gradle.kts' \
+          \) | head -n 1)"
 
-          if [ -z "$SETTINGS_FILE" ]; then
-            echo "ERROR: settings.gradle/settings.gradle.kts was not found."
-            find android-project -maxdepth 6 -type f | sort
+          if [ -z "${SETTINGS:-}" ]; then
+            echo "ERROR: settings.gradle was not found."
+            find android-project -maxdepth 6 -type f -print
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
+          PROJECT_DIR="$(dirname "$SETTINGS")"
 
           echo "Android project: $PROJECT_DIR"
           echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
+
+      - name: Fix JavaVersion compatibility
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Checking Gradle files for obsolete JavaVersion.VERSION_8..."
+
+          find "$PROJECT_DIR" -type f \( \
+            -name '*.gradle' -o \
+            -name '*.gradle.kts' \
+          \) -print0 | while IFS= read -r -d '' FILE; do
+            sed -i 's/JavaVersion\.VERSION_8/JavaVersion.VERSION_1_8/g' "$FILE"
+          done
+
+          if grep -R --include='*.gradle' \
+                    --include='*.gradle.kts' \
+                    'JavaVersion\.VERSION_8' \
+                    "$PROJECT_DIR"; then
+            echo "ERROR: JavaVersion.VERSION_8 still exists."
+            exit 1
+          fi
+
+          echo "JavaVersion compatibility check passed."
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -57,30 +95,19 @@ jobs:
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
 
-      - name: Install Gradle and create wrapper
+      - name: Create Gradle wrapper if missing
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
 
           if [ ! -f gradlew ]; then
-            echo "Gradle wrapper is missing. Creating it."
-
-            GRADLE_VERSION="8.9"
-            GRADLE_ZIP="gradle-${GRADLE_VERSION}-bin.zip"
-            GRADLE_URL="https://services.gradle.org/distributions/${GRADLE_ZIP}"
-
-            curl -fsSL "$GRADLE_URL" -o "/tmp/${GRADLE_ZIP}"
-            unzip -q "/tmp/${GRADLE_ZIP}" -d /tmp
-
-            "/tmp/gradle-${GRADLE_VERSION}/bin/gradle" wrapper \
-              --gradle-version "$GRADLE_VERSION"
+            echo "Gradle wrapper missing. Creating Gradle 8.9 wrapper."
+            gradle wrapper --gradle-version 8.9
           fi
-
-          test -f gradlew
-          test -f gradle/wrapper/gradle-wrapper.jar
-          test -f gradle/wrapper/gradle-wrapper.properties
 
           chmod +x gradlew
 
@@ -89,9 +116,9 @@ jobs:
 
       - name: Build debug APK
         shell: bash
+        working-directory: ${{ env.PROJECT_DIR }}
         run: |
           set -euo pipefail
-          cd "$PROJECT_DIR"
           ./gradlew assembleDebug --stacktrace
 
       - name: Locate APK
@@ -99,26 +126,21 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK_PATH="$(find "$PROJECT_DIR" -type f -name '*debug*.apk' | head -n 1)"
+          APK="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/debug/*.apk' | head -n 1)"
 
-          if [ -z "$APK_PATH" ]; then
+          if [ -z "${APK:-}" ]; then
             echo "ERROR: APK was not produced."
-            find "$PROJECT_DIR" -maxdepth 8 -type f | sort
+            find "$PROJECT_DIR" -type f -path '*/build/outputs/*' -print || true
             exit 1
           fi
 
-          echo "APK found: $APK_PATH"
-
-          mkdir -p apk-output
-          cp "$APK_PATH" apk-output/THT-Gate.apk
-
-          test -f apk-output/THT-Gate.apk
-          ls -lh apk-output/THT-Gate.apk
+          echo "APK produced: $APK"
+          cp "$APK" THT-Gate.apk
 
       - name: Upload THT Gate APK
         uses: actions/upload-artifact@v4
         with:
           name: THT-Gate-APK
-          path: apk-output/THT-Gate.apk
+          path: THT-Gate.apk
           if-no-files-found: error
           retention-days: 30
