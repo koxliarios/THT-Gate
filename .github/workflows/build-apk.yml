@@ -84,3 +84,4 @@ jobs:
             release/THT-Gate.apk.sha256
           if-no-files-found: error
           retention-days: 30
+
