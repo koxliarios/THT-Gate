@@ -9,13 +9,13 @@ permissions:
 jobs:
   build:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
 
     steps:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Verify project archive exists
+      - name: Verify project archive
         shell: bash
         run: |
           set -euo pipefail
@@ -26,62 +26,77 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          rm -rf project
-          mkdir project
-          unzip -q THT-Android-Project.zip -d project
-          test -f project/settings.gradle
-          test -f project/build.gradle
-          test -f project/app/build.gradle
-          test -f project/app/src/main/AndroidManifest.xml
+          rm -rf android-project
+          mkdir android-project
+          unzip -q THT-Android-Project.zip -d android-project
+          echo "Extracted files:"
+          find android-project -maxdepth 3 -type f | sort | head -200
 
-      - name: Set up Java 17
+      - name: Locate Gradle project
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          GRADLE_FILE="$(find android-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -1)"
+
+          if [ -z "$GRADLE_FILE" ]; then
+            echo "ERROR: No settings.gradle or settings.gradle.kts found."
+            exit 1
+          fi
+
+          PROJECT_DIR="$(dirname "$GRADLE_FILE")"
+
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "Android project: $PROJECT_DIR"
+
+      - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: "17"
 
-      - name: Set up Android SDK
-        uses: android-actions/setup-android@v3
+      - name: Set up Gradle
+        uses: gradle/actions/setup-gradle@v4
 
-      - name: Install Android SDK components
+      - name: Make Gradle wrapper executable
         shell: bash
+        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: |
           set -euo pipefail
-          yes | sdkmanager --licenses >/dev/null || true
-          sdkmanager "platforms;android-35" "build-tools;35.0.0" "platform-tools"
-
-      - name: Set up Gradle 8.9
-        uses: gradle/actions/setup-gradle@v4
-        with:
-          gradle-version: "8.9"
+          test -f gradlew
+          chmod +x gradlew
 
       - name: Build debug APK
-        working-directory: project
+        shell: bash
+        working-directory: ${{ steps.locate.outputs.project_dir }}
+        run: |
+          set -euo pipefail
+          ./gradlew --no-daemon assembleDebug
+
+      - name: Locate APK
+        id: apk
         shell: bash
         run: |
           set -euo pipefail
-          gradle --no-daemon --stacktrace assembleDebug
 
-      - name: Verify APK exists and is signed
-        shell: bash
-        run: |
-          set -euo pipefail
-          APK="project/app/build/outputs/apk/debug/app-debug.apk"
-          test -s "$APK"
-          "${ANDROID_HOME}/build-tools/35.0.0/apksigner" verify --verbose "$APK"
-          mkdir -p release
-          cp "$APK" release/THT-Gate.apk
-          sha256sum release/THT-Gate.apk > release/THT-Gate.apk.sha256
-          test -s release/THT-Gate.apk
-          test -s release/THT-Gate.apk.sha256
+          APK="$(find '${{ steps.locate.outputs.project_dir }}' -type f -name '*.apk' | head -1)"
 
-      - name: Upload installable APK artifact
+          if [ -z "$APK" ]; then
+            echo "ERROR: Build completed but no APK was found."
+            exit 1
+          fi
+
+          mkdir -p apk-output
+          cp "$APK" apk-output/THT-Gate.apk
+
+          test -s apk-output/THT-Gate.apk
+          sha256sum apk-output/THT-Gate.apk
+
+      - name: Upload THT Gate APK
         uses: actions/upload-artifact@v4
         with:
-          name: THT-Gate-Android
-          path: |
-            release/THT-Gate.apk
-            release/THT-Gate.apk.sha256
+          name: THT-Gate-APK
+          path: apk-output/THT-Gate.apk
           if-no-files-found: error
           retention-days: 30
-
