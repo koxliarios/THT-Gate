@@ -29,27 +29,25 @@ jobs:
           rm -rf android-project
           mkdir android-project
           unzip -q THT-Android-Project.zip -d android-project
-          echo "Archive extracted."
-          find android-project -maxdepth 3 -type f | head -100
+          echo "Project extracted."
 
       - name: Locate Gradle project
-        id: locate
         shell: bash
         run: |
           set -euo pipefail
 
-          GRADLEW_PATH="$(find android-project -type f -name gradlew -print -quit)"
+          SETTINGS_FILE="$(find android-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -n 1)"
 
-          if [ -z "$GRADLEW_PATH" ]; then
-            echo "ERROR: gradlew was not found in the extracted project."
-            find android-project -maxdepth 5 -type f
+          if [ -z "$SETTINGS_FILE" ]; then
+            echo "ERROR: settings.gradle/settings.gradle.kts was not found."
+            find android-project -maxdepth 6 -type f | sort
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$GRADLEW_PATH")"
+          PROJECT_DIR="$(dirname "$SETTINGS_FILE")"
 
           echo "Android project: $PROJECT_DIR"
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
+          echo "PROJECT_DIR=$PROJECT_DIR" >> "$GITHUB_ENV"
 
       - name: Set up Java
         uses: actions/setup-java@v4
@@ -60,43 +58,67 @@ jobs:
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
 
-      - name: Make Gradle wrapper executable
+      - name: Install Gradle and create wrapper
         shell: bash
-        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: |
           set -euo pipefail
+          cd "$PROJECT_DIR"
+
+          if [ ! -f gradlew ]; then
+            echo "Gradle wrapper is missing. Creating it."
+
+            GRADLE_VERSION="8.7"
+            GRADLE_ZIP="gradle-${GRADLE_VERSION}-bin.zip"
+            GRADLE_URL="https://services.gradle.org/distributions/${GRADLE_ZIP}"
+
+            curl -fsSL "$GRADLE_URL" -o "/tmp/${GRADLE_ZIP}"
+            unzip -q "/tmp/${GRADLE_ZIP}" -d /tmp
+
+            "/tmp/gradle-${GRADLE_VERSION}/bin/gradle" wrapper \
+              --gradle-version "$GRADLE_VERSION"
+          fi
+
           test -f gradlew
+          test -f gradle/wrapper/gradle-wrapper.jar
+          test -f gradle/wrapper/gradle-wrapper.properties
+
           chmod +x gradlew
+
+          echo "Gradle wrapper ready."
+          ./gradlew --version
 
       - name: Build debug APK
         shell: bash
-        working-directory: ${{ steps.locate.outputs.project_dir }}
         run: |
           set -euo pipefail
+          cd "$PROJECT_DIR"
           ./gradlew assembleDebug --stacktrace
 
       - name: Locate APK
-        id: apk
         shell: bash
         run: |
           set -euo pipefail
 
-          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
-          APK_PATH="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)"
+          APK_PATH="$(find "$PROJECT_DIR" -type f -name '*debug*.apk' | head -n 1)"
 
           if [ -z "$APK_PATH" ]; then
-            echo "ERROR: Build completed but no debug APK was found."
-            find "$PROJECT_DIR" -type f -name '*.apk' -print
+            echo "ERROR: APK was not produced."
+            find "$PROJECT_DIR" -maxdepth 8 -type f | sort
             exit 1
           fi
 
           echo "APK found: $APK_PATH"
-          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
+
+          mkdir -p apk-output
+          cp "$APK_PATH" apk-output/THT-Gate.apk
+
+          test -f apk-output/THT-Gate.apk
+          ls -lh apk-output/THT-Gate.apk
 
       - name: Upload THT Gate APK
         uses: actions/upload-artifact@v4
         with:
           name: THT-Gate-APK
-          path: ${{ steps.apk.outputs.apk_path }}
+          path: apk-output/THT-Gate.apk
           if-no-files-found: error
           retention-days: 30
