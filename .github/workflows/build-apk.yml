@@ -20,7 +20,7 @@ jobs:
         run: |
           set -euo pipefail
           test -f THT-Android-Project.zip
-          unzip -t THT-Android-Project.zip
+          echo "Project archive found."
 
       - name: Extract Android project
         shell: bash
@@ -29,8 +29,8 @@ jobs:
           rm -rf android-project
           mkdir android-project
           unzip -q THT-Android-Project.zip -d android-project
-          echo "Extracted files:"
-          find android-project -maxdepth 3 -type f | sort | head -200
+          echo "Archive extracted."
+          find android-project -maxdepth 3 -type f | head -100
 
       - name: Locate Gradle project
         id: locate
@@ -38,23 +38,24 @@ jobs:
         run: |
           set -euo pipefail
 
-          GRADLE_FILE="$(find android-project -type f \( -name settings.gradle -o -name settings.gradle.kts \) | head -1)"
+          GRADLEW_PATH="$(find android-project -type f -name gradlew -print -quit)"
 
-          if [ -z "$GRADLE_FILE" ]; then
-            echo "ERROR: No settings.gradle or settings.gradle.kts found."
+          if [ -z "$GRADLEW_PATH" ]; then
+            echo "ERROR: gradlew was not found in the extracted project."
+            find android-project -maxdepth 5 -type f
             exit 1
           fi
 
-          PROJECT_DIR="$(dirname "$GRADLE_FILE")"
+          PROJECT_DIR="$(dirname "$GRADLEW_PATH")"
 
-          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
           echo "Android project: $PROJECT_DIR"
+          echo "project_dir=$PROJECT_DIR" >> "$GITHUB_OUTPUT"
 
       - name: Set up Java
         uses: actions/setup-java@v4
         with:
           distribution: temurin
-          java-version: "17"
+          java-version: '17'
 
       - name: Set up Gradle
         uses: gradle/actions/setup-gradle@v4
@@ -72,7 +73,7 @@ jobs:
         working-directory: ${{ steps.locate.outputs.project_dir }}
         run: |
           set -euo pipefail
-          ./gradlew --no-daemon assembleDebug
+          ./gradlew assembleDebug --stacktrace
 
       - name: Locate APK
         id: apk
@@ -80,23 +81,22 @@ jobs:
         run: |
           set -euo pipefail
 
-          APK="$(find '${{ steps.locate.outputs.project_dir }}' -type f -name '*.apk' | head -1)"
+          PROJECT_DIR="${{ steps.locate.outputs.project_dir }}"
+          APK_PATH="$(find "$PROJECT_DIR" -type f -path '*/build/outputs/apk/debug/*.apk' -print -quit)"
 
-          if [ -z "$APK" ]; then
-            echo "ERROR: Build completed but no APK was found."
+          if [ -z "$APK_PATH" ]; then
+            echo "ERROR: Build completed but no debug APK was found."
+            find "$PROJECT_DIR" -type f -name '*.apk' -print
             exit 1
           fi
 
-          mkdir -p apk-output
-          cp "$APK" apk-output/THT-Gate.apk
-
-          test -s apk-output/THT-Gate.apk
-          sha256sum apk-output/THT-Gate.apk
+          echo "APK found: $APK_PATH"
+          echo "apk_path=$APK_PATH" >> "$GITHUB_OUTPUT"
 
       - name: Upload THT Gate APK
         uses: actions/upload-artifact@v4
         with:
           name: THT-Gate-APK
-          path: apk-output/THT-Gate.apk
+          path: ${{ steps.apk.outputs.apk_path }}
           if-no-files-found: error
           retention-days: 30
